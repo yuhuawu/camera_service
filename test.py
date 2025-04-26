@@ -7,7 +7,7 @@ import shutil
 import asyncio
 
 MOTION_THRESHOLD = 5000
-NO_MOTION_SECONDS = 2
+NO_MOTION_SECONDS = 5
 
 def detect_motion(prev_frame, current_frame, threshold=5000):
     if prev_frame is None or current_frame is None:
@@ -153,8 +153,6 @@ def video_stream_monitor(rtsp_url: str, output_dir: str, queue: asyncio.Queue, l
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    print("[Video Stream Monitor Thread] Monitoring for motion. Press 'q' to quit.")
-
     while True:
         #try:
             ret, frame = cap.read()
@@ -170,17 +168,20 @@ def video_stream_monitor(rtsp_url: str, output_dir: str, queue: asyncio.Queue, l
                 current_time = datetime.datetime.now()
                 if not recording:   # Start recording
                     ts = current_time.strftime("%Y%m%d_%H%M%S")
-                    filename = os.path.join(output_dir, f"motion_{ts}.mp4")
-                    current_recording_file = filename
+                    video_filepath = os.path.join(output_dir, f"motion_{ts}.mp4")
+                    current_recording_file = video_filepath
                     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    out = cv2.VideoWriter(filename, fourcc, fps, (width, height))
+                    out = cv2.VideoWriter(video_filepath, fourcc, fps, (width, height))
                     if not out.isOpened():
-                        logging.error(f"[Video Stream Monitor Thread] Error: Unable to open video writer for {filename}.")
+                        logging.error(f"[Video Stream Monitor Thread] Error: Unable to open video writer for {video_filepath}.")
                         recording = False
                         current_recording_file = None
                     else:
                         recording = True
-                        logging.info(f"[Video Stream Monitor Thread] Motion detected. Recording started: {filename}")
+                        logging.info(f"[Video Stream Monitor Thread] Motion detected. Recording started: {video_filepath}")
+                    #add a snapshot to attach to the email.
+                    img_filepath = os.path.join(output_dir, f"motion_{ts}.jpeg")
+                    cv2.imwrite(img_filepath, frame)
                 last_motion_time = current_time
             
             if not motion_detected: #no motion detected 
@@ -206,12 +207,11 @@ def video_stream_monitor(rtsp_url: str, output_dir: str, queue: asyncio.Queue, l
                         
             prev_frame = frame_copy_for_detection
             
-            cv2.imshow("RTSP Stream", frame)
-            key = cv2.waitKey(10)
-            if key != -1 and  key == ord('q'):
-                #print(f"Key pressed: {chr(0xFF & key)}")
-                logging.info(f"[Video Stream Monitor Thread] Key: {chr(0xFF & key)} is pressed, Quitting...")
-                break
+            #cv2.imshow("RTSP Stream", frame)
+            #key = cv2.waitKey(10)
+            #if key != -1 and  key == ord('q'):
+            #    logging.info(f"[Video Stream Monitor Thread] Key: {chr(0xFF & key)} is pressed, Quitting...")
+            #    break
         #except Exception as e:
         #    logging.error(f"[Video Stream Monitor Thread] Exception: {e}")
         #    break
@@ -228,7 +228,7 @@ def video_stream_monitor(rtsp_url: str, output_dir: str, queue: asyncio.Queue, l
     if cap.isOpened():
         cap.release()
         
-    cv2.destroyAllWindows()
+    #cv2.destroyAllWindows()
     
     for _ in range(5):
         cv2.waitKey(1)
@@ -316,6 +316,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 
     # Ensure OpenCV windows are closed if something went wrong
-    cv2.destroyAllWindows()
+    #cv2.destroyAllWindows()
     for _ in range(5): 
         cv2.waitKey(10)    
