@@ -16,13 +16,29 @@ def send_qq_mail(msg: EmailMessage) -> bool:
     """
     
     sender = os.getenv("QQ_MAIL_SENDER")
-    receiver = os.getenv("MAIL_RECEIVER")
+    if not sender:
+        logging.error("Sender email address is not set.")
+        return False
+    
+    receivers = os.getenv("MAIL_RECEIVERS")
+    if not receivers:
+        logging.error("Receiver email address list is not set.")
+        return False
+    
+    receiver_list = eval(receivers)
+    if not isinstance(receiver_list, list):
+        logging.error("Receiver email address list is not a valid list.")
+        return False
+    
     code = os.getenv("QQ_MAIL_CODE") 
+    if not code:
+        logging.error("QQ Mail authorization code is not set.")
+        return False
     
     # Create the email message
 
     msg['From'] = sender
-    msg['To'] = receiver
+    msg['To'] = ", ".join(receiver_list)
 
     # Attach the body to the email
     #msg.attach(MIMEText(body, 'plain'))
@@ -36,7 +52,7 @@ def send_qq_mail(msg: EmailMessage) -> bool:
     #server.ehlo()
     try:
         server.login(sender, code)
-        server.sendmail(sender, [receiver], msg.as_string())
+        server.send_message(msg)
     except smtplib.SMTPAuthenticationError as e:
         logging.error(f"SMTP Authentication Error: {e}")
         return False
