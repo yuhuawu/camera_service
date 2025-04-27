@@ -1,35 +1,24 @@
 import cv2
 
-def capture_rtsp_stream(rtsp_url):
-    # Open a connection to the RTSP stream
-    cap = cv2.VideoCapture(rtsp_url)
-
-    if not cap.isOpened():
-        print("Error: Unable to open the RTSP stream.")
-        return
-
-    print("RTSP stream opened successfully. Press 'q' to quit.")
-
-    while True:
-        # Read frames from the stream
-        ret, frame = cap.read()
-
-        if not ret:
-            print("Error: Unable to read frame from the RTSP stream.")
+def detect_motion(prev_frame, current_frame, threshold=5000):
+    if prev_frame is None or current_frame is None:
+        return False
+    # Convert frames to grayscale
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+    # Blur to reduce noise
+    prev_gray = cv2.GaussianBlur(prev_gray, (21, 21), 0)
+    curr_gray = cv2.GaussianBlur(curr_gray, (21, 21), 0)
+    # Frame difference
+    frame_delta = cv2.absdiff(prev_gray, curr_gray)
+    thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+    # Dilate for filling in holes
+    thresh = cv2.dilate(thresh, None, iterations=2)
+    # Find contours (areas with change)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    motion = False
+    for c in contours:
+        if cv2.contourArea(c) > threshold:
+            motion = True
             break
-
-        # Display the frame
-        cv2.imshow('RTSP Stream', frame)
-
-        # Exit if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    # Release the video capture object and close OpenCV windows
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    # Replace this with your RTSP URL
-    rtsp_url = "rtsp://ha:159357Hkvs24@192.168.1.203:554/Streaming/Channels/101"
-    capture_rtsp_stream(rtsp_url)
+    return motion

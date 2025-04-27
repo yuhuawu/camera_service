@@ -9,53 +9,9 @@ import asyncio
 MOTION_THRESHOLD = 5000
 NO_MOTION_SECONDS = 5
 
-def detect_motion(prev_frame, current_frame, threshold=5000):
-    if prev_frame is None or current_frame is None:
-        return False
-    # Convert frames to grayscale
-    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-    # Blur to reduce noise
-    prev_gray = cv2.GaussianBlur(prev_gray, (21, 21), 0)
-    curr_gray = cv2.GaussianBlur(curr_gray, (21, 21), 0)
-    # Frame difference
-    frame_delta = cv2.absdiff(prev_gray, curr_gray)
-    thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
-    # Dilate for filling in holes
-    thresh = cv2.dilate(thresh, None, iterations=2)
-    # Find contours (areas with change)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    motion = False
-    for c in contours:
-        if cv2.contourArea(c) > threshold:
-            motion = True
-            break
-    return motion
-
-
-def send_mail(filename):
-    """
-    Send an email notification with the filename.
-    :param filename: Name of the file to be sent
-    """
-    from notifier.qq_mail.sendmail import send_qq_mail
-    
-    parts = filename.split("_")
-    ymd = parts[1]
-    hms = parts[2].split(".")[0]
-    
-    sender = os.getenv("QQ_MAIL_SENDER")
-    receiver = os.getenv("MAIL_RECEIVER")
-    code = os.getenv("QQ_MAIL_CODE")    
-    subject = f"Motion Detected at - {ymd} - {hms}"
-    body = f"File saved as: {parts[2]}"
-    
-    try:
-        send_qq_mail(sender, receiver, code, subject, body)
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
-        return False
-    return True
+from capture import detect_motion
+from utils import send_mail
+from utils import select_snapshot
 
 
 async def process_vidoe_file(src_path: str, loop: asyncio.AbstractEventLoop):
@@ -94,7 +50,16 @@ async def process_vidoe_file(src_path: str, loop: asyncio.AbstractEventLoop):
         await loop.run_in_executor(None, shutil.move, src_path, dest_path)
         logging.info(f"[Async Handler] Moved file: {f"{src_path}"} to archive: {dest_path}")
         
-        ret = await loop.run_in_executor(None, send_mail, filename)
+        image_name = f"{time_str}.jpg"
+        ret = await loop.run_in_executor(None, select_snapshot, dest_path, os.path.join(directory, image_name))
+        if ret:
+            logging.info(f"[Async Handler] Snapshot taken successfully for file: {filename}")
+        else:
+            logging.error(f"[Async Handler] Failed to take snapshot for file: {filename}")
+            image_name = None
+        
+        mail_ttile = date_str + "-" + time_str
+        ret = await loop.run_in_executor(None, send_mail, mail_ttile, directory, image_name)
         if ret:
             logging.info(f"[Async Handler] Email sent successfully for file: {filename}")
         else:
@@ -179,9 +144,6 @@ def video_stream_monitor(rtsp_url: str, output_dir: str, queue: asyncio.Queue, l
                     else:
                         recording = True
                         logging.info(f"[Video Stream Monitor Thread] Motion detected. Recording started: {video_filepath}")
-                    #add a snapshot to attach to the email.
-                    img_filepath = os.path.join(output_dir, f"motion_{ts}.jpeg")
-                    cv2.imwrite(img_filepath, frame)
                 last_motion_time = current_time
             
             if not motion_detected: #no motion detected 
