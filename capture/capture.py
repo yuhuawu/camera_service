@@ -1,179 +1,184 @@
-import logging
-import subprocess
+"""
+write a new version of the capture.py
+simplify the code: only use ffmpeg to capture the live stream and output the segments
+"""
 
 import os
+import subprocess
 import time
+from datetime import datetime, timedelta
+import threading
 
-import asyncio
+SEGMENT_TIME = 1 * 60
+RECONNECT_DELAY_SECONDS = 10
 
-def stream_segmenter(rtsp_url: str, output_dir: str, segment_duration: int, 
-    queue: asyncio.Queue, 
-    loop: asyncio.AbstractEventLoop,
-    shutdown_event: asyncio.Event = None
-    ):
+from utils.subprocess_log import start_subprocess_log_threads, stop_subprocess_log_threads
+
+
+def recording_and_segment_func(stop_event, 
+                               segment_duration,
+                               output_dir,
+                               live_stream_url):
     """
-    Runs FFmpeg as a subprocess to segment the RTSP stream into files.
-    Monitors the output directory and puts finished segment paths onto the queue.
-    This function runs in a separate thread.
+    Solely responsible for continuously recording the live stream to 1-hour MP4 segments
+    using an ffmpeg subprocess.
     """
-    logging.info(f"[Segmenter Thread] Starting stream segmenter for URL: {rtsp_url}")
-    processed_segments = set()
-    segment_filename_pattern = "segment_%Y%m%d_%H%M%S.mp4"
-    output_pattern = os.path.join(output_dir, segment_filename_pattern)
-
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
-    ffmpeg_cmd = [
-        "ffmpeg", #command to run
-        '-loglevel', 'error', # Reduce console spam, increase on debug
-        '-rtsp_transport', 'tcp', # Often more reliable
-        '-i', rtsp_url,
-        '-c:v', 'copy',       # Try to copy video stream without re-encoding (low CPU)
-        '-an',                # No audio
-        '-f', 'segment',
-        '-segment_time', str(segment_duration),
-        '-segment_format', 'mp4',
-        '-strftime', '1',     # Enable timestamp formatting in filename
-        '-reset_timestamps', '1', # Start timestamps from 0 for each segment
-        output_pattern
-    ]
+    threading_name = threading.current_thread().name
+    logging.info(f"[{threading_name}] Started. Receive from: {live_stream_url} to: {output_dir}")
     
-    poll_interval = 1
-
-    logging.info(f"[Segmenter Thread] Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
-    process = None
-    try:
-        process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        # Monitor the output directory for new segment files
-        # as the command runs, it will create lots of files for each segment util it stops
-        while process.poll() is None and not shutdown_event.is_set(): # While ffmpeg is running
-            try:
-                
-                for filename in os.listdir(output_dir):
-                    if filename.startswith("segment_") and filename.endswith(".mp4"):
-                        full_path = os.path.join(output_dir, filename)
-                        if full_path not in processed_segments:
-                             # Basic check: ensure file size is > 0 and mod time is slightly old
-                             try:
-                                 stat_info = os.stat(full_path)
-                                 if stat_info.st_size > 0 and (time.time() - stat_info.st_mtime) > segment_duration: # Wait 2s after last write
-                                     logging.info(f"[Segmenter Thread] Found new segment: {full_path}")
-                                     loop.call_soon_threadsafe(queue.put_nowait, full_path)
-                                     processed_segments.add(full_path)
-                             except FileNotFoundError:
-                                 continue # File might have been deleted by detector quickly
-                             except Exception as e:
-                                 logging.error(f"[Segmenter Thread] Error stating file {full_path}: {e}")
-
-                # Sleep only if no new files were found in this pass
-                time.sleep(poll_interval)
-            except Exception as e:
-                logging.error(f"[Segmenter Thread] Error scanning directory {output_dir}: {e}")
-                time.sleep(poll_interval) # Avoid busy-loop on error
-
-        logging.info(f"[Segmenter Thread] FFmpeg process exited with code: {process.returncode}")
-        stderr_output = process.stderr.read().decode(errors='ignore')
-        if process.returncode != 0:
-             logging.error(f"[Segmenter Thread] FFmpeg Error Output:\n{stderr_output}")
-        else:
-             logging.info(f"[Segmenter Thread] FFmpeg stderr (might contain warnings):\n{stderr_output}")
-
-
-    except FileNotFoundError:
-        logging.error(f"[Segmenter Thread] Error: 'ffmpeg command not found. Please ensure FFmpeg is installed and in PATH.")
-    except Exception as e:
-        logging.error(f"[Segmenter Thread] An unexpected error occurred: {e}", exc_info=True)
-    finally:
-        if process and process.poll() is None:
-            logging.warning("[Segmenter Thread] Terminating FFmpeg process...")
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logging.error("[Segmenter Thread] FFmpeg did not terminate gracefully, killing.")
-                process.kill()
-        logging.info("[Segmenter Thread] Performing final segment scan...")
-        # Final scan after FFmpeg exits
-        try:
-            for filename in os.listdir(output_dir):
-                 if filename.startswith("segment_") and filename.endswith(".mp4"):
-                    full_path = os.path.join(output_dir, filename)
-                    if full_path not in processed_segments:
-                        logging.info(f"[Segmenter Thread] Found leftover segment: {full_path}")
-                        loop.call_soon_threadsafe(queue.put_nowait, full_path)
-                        processed_segments.add(full_path)
-        except Exception as e:
-            logging.error(f"[Segmenter Thread] Error during final scan: {e}")
-
-        # Signal the detector that no more segments will be produced
-        logging.info("[Segmenter Thread] Signaling detector to stop.")
-        loop.call_soon_threadsafe(queue.put_nowait, None)
-        logging.info("[Segmenter Thread] Stream segmenter finished.")
+    recorder_process = None
+    subprocess_stdout_log_thread = None
+    subprocess_stderr_log_thread = None
         
-async def consumer(queue):
-    while True:
-        segment_file = await queue.get()
-        if segment_file is None:
-            logging.info("[Main Async] No more segments to process, consumer exiting.")
-            queue.task_done()
-            break
-        logging.info(f"[Main Async] Consumed segment file: {segment_file}")
-        # Process the segment file here
-        # For example, you can pass it to the detector for further processing
-        # detector.process_segment(segment_file)
-        queue.task_done()        
+    try:
+        while not stop_event.is_set():
+            # Construct filename with current timestamp to ensure unique start for each ffmpeg instance
+            # This helps if ffmpeg crashes and needs to be restarted by the loop.
+            # The segmenter will still create files aligned to clock time if possible.
+            segment_filename_pattern = "segment_%Y%m%d_%H%M%S.mp4"
+            output_pattern = os.path.join(output_dir, segment_filename_pattern)
 
-async def main():
+            ffmpeg_record_cmd = [
+                'ffmpeg',
+                '-loglevel', 'info',
+                '-rtsp_transport', 'tcp',
+                '-i', live_stream_url,
+                '-c:v', 'copy',
+                '-c:a', 'copy', # Or 'aac' if copy causes issues and some audio transcoding is fine
+                '-map', '0', # Map all streams from input
+                '-f', 'segment',
+                '-segment_time', str(segment_duration),
+                '-segment_format', 'mp4',
+                '-strftime', '1',
+                '-fflags', '+genpts',
+                output_pattern
+            ]
+            logging.info(f"[{threading_name}] Starting/Restarting continuous recording: {' '.join(ffmpeg_record_cmd)}")
+            recorder_process = subprocess.Popen(ffmpeg_record_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            if subprocess_stdout_log_thread is None and subprocess_stderr_log_thread is None:
+                # Start logging threads for the ffmpeg process
+                subprocess_stdout_log_thread, subprocess_stderr_log_thread = start_subprocess_log_threads(recorder_process, base_log_name="ffmpeg_recorder")
+            else:
+                # If threads are already running, just log the restart
+                raise Exception("Logging threads already running. This should not happen.")
+
+            # Monitor the ffmpeg process and the stop event
+            while not stop_event.is_set():
+                if recorder_process.poll() is not None: # ffmpeg has exited
+                    logging.info(f"[{threading_name}] ffmpeg recorder process {recorder_process.pid} exited with code {recorder_process.returncode}.")
+                    stop_subprocess_log_threads(subprocess_stdout_log_thread, subprocess_stderr_log_thread)
+                    subprocess_stdout_log_thread = None
+                    subprocess_stderr_log_thread = None
+                    recorder_process = None
+                    break # Break inner loop to restart ffmpeg
+                
+                stop_event.wait(1) # Check every second for recording process status and stop event
+
+            if stop_event.is_set():
+                # If stop event is set, terminate ffmpeg if it's still running
+                if recorder_process.poll() is None:
+                    logging.info(f"[{threading.current_thread().name}] Stop signal received. Terminating continuous recorder...")
+                    recorder_process.terminate()
+                    try:
+                        recorder_process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        logging.warning("[RecordingProcess] ffmpeg recorder did not terminate gracefully, killing.")
+                        recorder_process.kill()
+                stop_subprocess_log_threads(subprocess_stdout_log_thread, subprocess_stderr_log_thread)
+                subprocess_stdout_log_thread, subprocess_stderr_log_thread = None, None    
+                break # Break outer loop
+
+            if not stop_event.is_set():
+                logging.info(f"[RecordingProcess] ffmpeg process ended unexpectedly. Restarting in {RECONNECT_DELAY_SECONDS}s...")
+                stop_event.wait(RECONNECT_DELAY_SECONDS)
+    except Exception as e:
+        logging.info(f"[{threading.current_thread().name}] Exception {e} received. Stopping...")
+    finally:
+        print(f"DEBUG: [{threading_name}] In finally block of recording_and_segment_func.")
+        logging.info(f"[{threading.current_thread().name}] Entering finally block for cleanup.")
+        if recorder_process and recorder_process.poll() is None:
+            logging.info(f"[{threading.current_thread().name}] Terminating ffmpeg process.")
+            recorder_process.terminate()
+            try:
+                recorder_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logging.warning(f"[{threading.current_thread().name}] ffmpeg did not terminate gracefully, killing.")
+                recorder_process.kill()
+            # Optionally read and log any final stderr here
+            stop_subprocess_log_threads(subprocess_stdout_log_thread, subprocess_stderr_log_thread)
+            subprocess_stdout_log_thread, subprocess_stderr_log_thread = None, None
+        logging.info(f"[{threading_name}] Stopped.")
+        print(f"DEBUG: [{threading_name}] In finally block of recording_and_segment_func. End of function.")
+        
+from dotenv import load_dotenv
+def main():
+    """
+    Main function to test the recording_and_segment_process.
+    """
+    env_path = os.path.join(os.path.dirname(__file__),  '..', '.env')
+    if not os.path.exists(env_path):
+        logging.error(f"Environment file {env_path} not found. Please create it or check the path.")
+        exit(1) # Exit if .env is critical
+    
+    load_dotenv(env_path)
+    
+    # set up environment variables
     recording_dir = os.getenv("RECORDING_DIR")
     if not recording_dir:
         logging.error("RECORDING_DIR environment variable is not set.")
         raise ValueError("RECORDING_DIR is not set.")
     
-    rtsp_urls = os.getenv("RTSP_URLS")
-    rtsp_urls_obj = eval(rtsp_urls)
-    #currently oonly one url is supported
-    rtsp_url = rtsp_urls_obj[0]
+    rtsp_urls_env = os.getenv("RTSP_URLS")
+    if not rtsp_urls_env:
+        logging.error("RTSP_URLS environment variable is not set.")
+        raise ValueError("RTSP_URLS is not set.")
+    try:
+        rtsp_urls_obj = eval(rtsp_urls_env) # Caution with eval; consider json.loads if format allows
+        if not isinstance(rtsp_urls_obj, list) or not rtsp_urls_obj or not isinstance(rtsp_urls_obj[0], str):
+            raise ValueError("RTSP_URLS should be a non-empty list of strings.")
+        rtsp_url = rtsp_urls_obj[0]
+    except Exception as e:
+        logging.error(f"Error parsing RTSP_URLS: {e}. Example: \"['rtsp://user:pass@host/stream']\"")
+        raise
+
     logging.info(f"[Main Async] Starting Video Producer for URL: {rtsp_url}")
     
-    loop = asyncio.get_event_loop()
-    segment_file_queue = asyncio.Queue()
-    shutdown_event = asyncio.Event()
+    stop_event = threading.Event()
     
-    # Start the stream segmenter in a separate thread
-    duration_in_min = 1
-    segmenter_task = loop.run_in_executor(
-        None, stream_segmenter, rtsp_url, recording_dir, duration_in_min * 60, segment_file_queue, loop, shutdown_event)
-    # Wait for the segmenter to finish
-    # create a simple consumer to read from the queue
+    # Create a stop event for the recording process
+    segment_duration = 1 * 60 #test 
     
-    consumer_task = loop.create_task(consumer(segment_file_queue))
-    # Run the consumer and segmenter tasks concurrently
+    recording_thread = threading.Thread(
+        target=recording_and_segment_func,
+        args=(stop_event, segment_duration, recording_dir, rtsp_url),
+        name="RecordingThread",              
+    )
+    
+    #recording_thread.daemon = True # Daemonize thread
+   
+    recording_thread.start()
+   
     try:
-        await asyncio.gather(consumer_task, segmenter_task )
+        while recording_thread.is_alive():
+            recording_thread.join(timeout=1)
+            logging.info(f"[Main] Recording thread is alive. PID: {recording_thread.ident}")
     except KeyboardInterrupt:
-        logging.info("[Main Async] Keyboard interrupt received, stopping...")
-        shutdown_event.set()
-    except Exception as e:
-        logging.error(f"[Main Async] Error in main loop: {e}")
+        logging.info("[Main] Receive KeyboardStopping recording process...")
     finally:
-        logging.info("[Main Async] Cleaning up...")
-        if not segmenter_task.done():
-            segmenter_task.cancel()
-        if not consumer_task.done():
-            consumer_task.cancel()
-       
-        
+        logging.info("[Main] Sending stop signal to child processes...")
+        if not stop_event.is_set():
+            stop_event.set()
+
+        logging.info("[Main] Waiting for Recording Process to join...")
+        if recording_thread.is_alive():
+            recording_thread.join()       
+            if recording_thread.is_alive():
+                logging.warning("[Main] Recording thread did not join in time. Forcing exit.")
+        logging.info("System shut down complete.")
+
+import logging    
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format='%(filename)s:%(lineno)d -%(thread)d - %(asctime)s - %(levelname)s - %(message)s')
-    env_path = os.path.join(os.path.dirname(__file__),  '..', '.env')
-    if not os.path.exists(env_path):
-        logging.warning(f"Environment file {env_path} not found")
-        raise FileNotFoundError(f"Environment file {env_path} not found")
-    
-    from dotenv import load_dotenv
-    load_dotenv(env_path)
-    
-    # Check if the required environment variables are set
-    asyncio.run(main())
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s - %(process)d - %(thread)d - %(filename)s:%(lineno)d - %(levelname)s - %(message)s')
+    main()

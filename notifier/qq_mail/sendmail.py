@@ -3,6 +3,54 @@ import logging
 import smtplib
 
 from email.message import EmailMessage
+from email.message import EmailMessage
+from email.utils import make_msgid  
+
+
+def send_html_mail(title, directory, image_name) -> bool:
+    """
+    Send an email notification with the filename.
+    :param title, ymd-hms
+    :param directory, path to the image and video
+    :param image_name, name of the image
+    """
+    from notifier.qq_mail.sendmail import send_qq_mail
+    
+    video_name = image_name.split(".")[0] + ".mp4"      
+    subject = f"Motion Detected at - {title}"
+    body = f"File saved as: {video_name}"
+    img_path = os.path.join(directory, image_name)
+    
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg.set_content(body)
+    
+    img_cid = make_msgid()
+    img_cid_strip = img_cid[1:-1]  # Remove angle brackets
+    html_body = f"""
+    <html>
+    <body>
+        <h1>Motion Detected</h1>
+        <p>File saved as: {video_name}</p>
+        <img src="cid:{img_cid_strip}" alt="{image_name}">
+    </body>
+    </html>
+    """    
+    msg.add_alternative(html_body, subtype='html')
+    
+    with open(img_path, 'rb') as img:
+        img_data = img.read()
+        msg.get_payload()[1].add_related(img_data, 'image', 'jpeg', cid=img_cid)
+        msg.add_attachment(img_data, maintype='image', subtype='jpeg', filename=image_name)
+        
+    try:
+        is_successful = send_qq_mail(msg)
+    except Exception as e:
+        logging.error(f"Failed to send email: {e}")
+        return False
+    
+    return is_successful
+
 
 def send_qq_mail(msg: EmailMessage) -> bool:
     """
@@ -127,6 +175,20 @@ def test_send_html_mail_with_image_inline():
         logging.error("Failed to send email.")
     else:
         logging.info("Email sent successfully.")
+
+def test_send_html_mail():
+    """
+    Test the send_mail function.
+    """
+    title = "Test Title"
+    directory = "."  # Current directory
+    image_name = "snapshot.jpg"  # Replace with your test image name
+    result = send_html_mail(title, directory, image_name)
+    if result:
+        logging.info("Email sending test passed.")
+    else:
+        logging.error("Email sending test failed.")
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
