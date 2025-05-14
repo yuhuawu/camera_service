@@ -95,7 +95,6 @@ def recording_and_segment_func(stop_event,
     except Exception as e:
         logging.info(f"[{threading.current_thread().name}] Exception {e} received. Stopping...")
     finally:
-        print(f"DEBUG: [{threading_name}] In finally block of recording_and_segment_func.")
         logging.info(f"[{threading.current_thread().name}] Entering finally block for cleanup.")
         if recorder_process and recorder_process.poll() is None:
             logging.info(f"[{threading.current_thread().name}] Terminating ffmpeg process.")
@@ -109,7 +108,6 @@ def recording_and_segment_func(stop_event,
             stop_subprocess_log_threads(subprocess_stdout_log_thread, subprocess_stderr_log_thread)
             subprocess_stdout_log_thread, subprocess_stderr_log_thread = None, None
         logging.info(f"[{threading_name}] Stopped.")
-        print(f"DEBUG: [{threading_name}] In finally block of recording_and_segment_func. End of function.")
         
 from dotenv import load_dotenv
 def main():
