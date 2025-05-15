@@ -1,5 +1,6 @@
 import logging
 import threading
+import os
 
 def log_subprocess_output(pipe, log_level, log_name):
     #Reads lines from a subprocess pipe and logs them.
@@ -63,3 +64,36 @@ def stop_subprocess_log_threads(stdout_thread, stderr_thread, timeout=5):
         if stdout_thread.is_alive():
             logging.warning(f"[{thread_name}] Stdout logging thread did not join in time.")
     logging.debug(f"[{thread_name}] Finished joining logging threads.")
+
+
+def setup_logging(log_filename_prefix="subprocess", logging_level=logging.DEBUG):
+    """
+    Set up logging configuration.
+    """
+    process_id = os.getpid()
+    loggername = f"{log_filename_prefix}-{process_id}"
+    log_filename = f"{loggername}.log"
+    
+    logger = logging.getLogger(loggername)
+    logger.setLevel(logging_level)
+    
+    logger.propagate = False # Prevent propagation to root logger
+    
+    fh = logging.FileHandler(log_filename)
+    fh.setLevel(logging_level)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - PID:%(process)d - %(filename)s:%(lineno)d - THREAD:%(thread)d - %(message)s')
+    fh.setFormatter(formatter)
+    
+    if not logger.handlers:
+        logger.addHandler(fh)
+    
+    return logger, fh
+
+def release_logging_handlers(logger, fh):
+    """
+    Release logging handlers.
+    """
+    logger.info("[release_logging_handlers] Releasing logging handlers...")
+    if fh in logger.handlers:
+        logger.removeHandler(fh)
+        fh.close()

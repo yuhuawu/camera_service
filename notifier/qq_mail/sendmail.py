@@ -13,17 +13,13 @@ def send_html_mail(title, directory, image_name) -> bool:
     :param title, ymd-hms
     :param directory, path to the image and video
     :param image_name, name of the image
-    """
-    from notifier.qq_mail.sendmail import send_qq_mail
-    
-    video_name = image_name.split(".")[0] + ".mp4"      
+    """    
     subject = f"Motion Detected at - {title}"
-    body = f"File saved as: {video_name}"
     img_path = os.path.join(directory, image_name)
     
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg.set_content(body)
+    msg.set_content("there is a motion detected")
     
     img_cid = make_msgid()
     img_cid_strip = img_cid[1:-1]  # Remove angle brackets
@@ -31,7 +27,6 @@ def send_html_mail(title, directory, image_name) -> bool:
     <html>
     <body>
         <h1>Motion Detected</h1>
-        <p>File saved as: {video_name}</p>
         <img src="cid:{img_cid_strip}" alt="{image_name}">
     </body>
     </html>
@@ -123,6 +118,19 @@ def test_send_mail():
         logging.error("Failed to send email.")
     else:
         logging.info("Email sent successfully.")
+        
+def test_send_html_mail():
+    """
+    Test the send_mail function.
+    """
+    title = "Test Title"
+    directory = "."  # Current directory
+    image_name = "snapshot.jpg"  # Replace with your test image name
+    result = send_html_mail(title, directory, image_name)
+    if result:
+        logging.info("Email sending test passed.")
+    else:
+        logging.error("Email sending test failed.")
     
 def test_send_html_mail_with_attachement():
     subject = "Test Subject"
@@ -176,18 +184,7 @@ def test_send_html_mail_with_image_inline():
     else:
         logging.info("Email sent successfully.")
 
-def test_send_html_mail():
-    """
-    Test the send_mail function.
-    """
-    title = "Test Title"
-    directory = "."  # Current directory
-    image_name = "snapshot.jpg"  # Replace with your test image name
-    result = send_html_mail(title, directory, image_name)
-    if result:
-        logging.info("Email sending test passed.")
-    else:
-        logging.error("Email sending test failed.")
+
 
 
 if __name__ == "__main__":

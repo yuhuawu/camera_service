@@ -1,0 +1,1 @@
+from .detector import motion_detection_process

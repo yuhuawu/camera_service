@@ -1,3 +1,14 @@
+"""
+This script captures frames from a video stream (RTSP or file) and puts them into a queue.
+It uses OpenCV to read the video stream and a separate thread to handle the reading process.
+The main thread processes the frames from the queue.
+The script is designed to handle reconnections and errors gracefully.
+
+The opencv2.videocapture().read() will cause a blocking read, 
+but I still confused why using it in a sperated thread could make the work thread(reading the frame) detect stop_event timely compared with only one thread.
+
+"""
+
 import queue
 import cv2
 import logging
@@ -10,7 +21,8 @@ from utils.subprocess_log import setup_logging, release_logging_handlers
 def frame_reader_thread_func(live_stream_url: str, 
                              frame_queue: queue.Queue, 
                              stop_event_reader: threading.Event, 
-                             logger_reader: logging.Logger):
+                             logger_reader: logging.Logger, 
+                             sample_rate: int): #sample rate defines how many frames per second to insert into the queue
     """
     Reads frames from the video stream and puts them into a queue.
     Runs in a separate thread.
@@ -20,6 +32,11 @@ def frame_reader_thread_func(live_stream_url: str,
     logger_reader.info("[FrameReader] Thread started.")
     consecutive_read_errors = 0
     max_consecutive_read_errors = 5 # Adjust as needed
+
+    sample_gap = 1.0 / sample_rate if sample_rate > 0 else 0.0
+    logger_reader.info(f"[FrameReader] Sample rate: {sample_rate} fps, sample gap: {sample_gap:.2f}s")
+    
+    last_frame_time = None
 
     while not stop_event_reader.is_set():
         try:
@@ -50,7 +67,16 @@ def frame_reader_thread_func(live_stream_url: str,
                 continue
             
             consecutive_read_errors = 0 # Reset on successful read
-
+            current_time = time.time()
+            if last_frame_time is None:
+                last_frame_time = current_time
+            time_diff = current_time - last_frame_time
+            if time_diff < sample_gap:
+                logger_reader.debug(f"[FrameReader] Frame skipped due to sample rate. Time since last frame: {time_diff:.2f}s")
+                continue
+            
+            last_frame_time = current_time
+             
             # Put frame into the queue, discard old one if queue is full (latest frame)
             try:
                 # Non-blocking clear of the queue
@@ -59,6 +85,7 @@ def frame_reader_thread_func(live_stream_url: str,
                         frame_queue.get_nowait()
                     except queue.Empty:
                         break # Should be rare with maxsize=1
+                logger_reader.debug(f"[FrameReader] Frame read successfully. Queue size before put: {frame_queue.qsize()}")
                 frame_queue.put(frame, timeout=0.5) # Small timeout to prevent indefinite block
             except queue.Full:
                 logger_reader.warning("[FrameReader] Frame queue was full after attempting to clear. Skipping frame.")

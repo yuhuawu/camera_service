@@ -1,2 +1,3 @@
-from .capture import stream_segmenter
+from .capture_to_file import recording_and_segment_func
+from .capture_to_frame import frame_reader_thread_func
 from .snapshot import select_snapshot
