@@ -64,9 +64,14 @@ def main():
             if not motion_event_queue.empty():
                 try:
                     event_type, motion_start_time, motion_end_time, snap_img_name = motion_event_queue.get(timeout=0.5)
+                    logging.info(f"[Main] Motion event received: {event_type}, {motion_start_time}, {motion_end_time}, {snap_img_name}")
                     mail_tile = f"Motion detected from {motion_start_time} to {motion_end_time}"
                     directory = snapshot_dir_path
-                    send_html_mail(title=mail_tile, directory=directory, image_name=snap_img_name)                        
+                    ret = send_html_mail(title=mail_tile, directory=directory, image_name=snap_img_name)   
+                    if ret:
+                        logging.info(f"[Main] Email sent successfully for motion event: {event_type}")
+                    else:
+                        logging.error(f"[Main] Failed to send email for motion event: {event_type}")                     
                 except multiprocessing.queues.Empty:
                     logging.info("[Main] No motion event in queue.")
             else:
@@ -95,7 +100,7 @@ if __name__ == "__main__":
     # Load environment variables
     
     # Set up logging
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(process)d - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(process)d - %(levelname)s - %(message)s')
     
     # Start the main async function
     main()  

@@ -170,7 +170,7 @@ def motion_detection_process(motion_event_queue: multiprocessing.Queue,
                              live_stream_url: str,
                              base_frame_img_path: str,
                              ):
-    logger, fh = setup_logging("motion_detection", logging.DEBUG)
+    logger, fh = setup_logging("motion_detection", logging.INFO)
     logger.info("[MotionDetectionProcess] Starting motion detection process...")
     
     cap = None
